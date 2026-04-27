@@ -1,0 +1,48 @@
+# Mark this crate as its own workspace root so it doesn't get pulled into
+# the Anatta workspace when checked out under Anatta/workspaces/ for local dev.
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Anatta <noreply@anatta.dev>"]
+license = "Apache-2.0"
+repository = "https://github.com/anatta-rs/dork"
+
+[workspace.dependencies]
+# Internal — backends depend on the core via path.
+dork-core = { path = "crates/dork-core" }
+
+# Foundational external deps.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+url = "2"
+
+# HTML scraping (DuckDuckGo backend).
+scraper = "0.22"
+
+# Dev-deps shared across crates.
+pretty_assertions = "1"
+mockito = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

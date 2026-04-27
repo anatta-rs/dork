@@ -1,0 +1,346 @@
+//! `dork-duckduckgo` — `SearchEngine` backend that scrapes the DuckDuckGo
+//! HTML lite endpoint at <https://html.duckduckgo.com/html/>.
+//!
+//! No API key required. Be respectful: rate-limit your callers and identify
+//! your client via [`DuckDuckGoEngineBuilder::user_agent`] — the default is
+//! generic enough that DDG won't block it on low traffic, but you should
+//! always send something honest.
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use dork_core::{Query, SearchEngine};
+//! use dork_duckduckgo::DuckDuckGoEngine;
+//!
+//! # async fn run() -> dork_core::Result<()> {
+//! let engine = DuckDuckGoEngine::new();
+//! let hits = engine.search(&Query::new("rust async patterns").with_limit(5)).await?;
+//! for hit in hits {
+//!     println!("{rank}. {title} — {url}", rank = hit.rank, title = hit.title, url = hit.url);
+//! }
+//! # Ok(()) }
+//! ```
+
+#![warn(missing_docs)]
+#![deny(unsafe_code)]
+#![allow(clippy::doc_markdown)] // brand "DuckDuckGo" appears throughout
+
+mod parse;
+
+use async_trait::async_trait;
+use dork_core::{DorkError, Query, Result, SafeSearch, SearchEngine, SearchHit};
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, USER_AGENT};
+use reqwest::{Client, Url};
+
+const ENGINE_NAME: &str = "duckduckgo";
+const DEFAULT_USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; dork/0.1; +https://github.com/anatta-rs/dork)";
+const DEFAULT_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+
+/// Backend that hits the DuckDuckGo HTML endpoint and parses the result page.
+#[derive(Debug, Clone)]
+pub struct DuckDuckGoEngine {
+    client: Client,
+    endpoint: String,
+    user_agent: String,
+}
+
+impl DuckDuckGoEngine {
+    /// Construct an engine with sensible defaults.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::builder().build()
+    }
+
+    /// Start a builder for fine-tuning the underlying HTTP client.
+    #[must_use]
+    pub fn builder() -> DuckDuckGoEngineBuilder {
+        DuckDuckGoEngineBuilder::default()
+    }
+}
+
+impl Default for DuckDuckGoEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Configurable builder for [`DuckDuckGoEngine`].
+#[derive(Debug, Clone)]
+pub struct DuckDuckGoEngineBuilder {
+    client: Option<Client>,
+    endpoint: String,
+    user_agent: String,
+}
+
+impl Default for DuckDuckGoEngineBuilder {
+    fn default() -> Self {
+        Self {
+            client: None,
+            endpoint: DEFAULT_ENDPOINT.into(),
+            user_agent: DEFAULT_USER_AGENT.into(),
+        }
+    }
+}
+
+impl DuckDuckGoEngineBuilder {
+    /// Override the underlying `reqwest` client (use this to set timeouts,
+    /// proxies, etc.).
+    #[must_use]
+    pub fn client(mut self, client: Client) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    /// Override the endpoint URL — primarily for tests against a local
+    /// mock server. Production callers should leave this alone.
+    #[must_use]
+    pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = endpoint.into();
+        self
+    }
+
+    /// Override the `User-Agent` header. Be honest — identify your tool.
+    #[must_use]
+    pub fn user_agent(mut self, ua: impl Into<String>) -> Self {
+        self.user_agent = ua.into();
+        self
+    }
+
+    /// Finalise the engine.
+    #[must_use]
+    pub fn build(self) -> DuckDuckGoEngine {
+        DuckDuckGoEngine {
+            client: self.client.unwrap_or_default(),
+            endpoint: self.endpoint,
+            user_agent: self.user_agent,
+        }
+    }
+}
+
+#[async_trait]
+impl SearchEngine for DuckDuckGoEngine {
+    fn name(&self) -> &'static str {
+        ENGINE_NAME
+    }
+
+    async fn search(&self, query: &Query) -> Result<Vec<SearchHit>> {
+        if !query.is_valid() {
+            return Err(DorkError::InvalidQuery(
+                "query is empty or limit < 1".into(),
+            ));
+        }
+
+        let url = build_request_url(&self.endpoint, query)?;
+
+        let response = self
+            .client
+            .get(url)
+            .header(USER_AGENT, &self.user_agent)
+            .header(ACCEPT, "text/html")
+            .header(
+                ACCEPT_LANGUAGE,
+                query.region.as_deref().unwrap_or("en-US,en;q=0.9"),
+            )
+            .send()
+            .await
+            .map_err(|e| DorkError::Network(e.to_string()))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(DorkError::RateLimited {
+                retry_after_seconds: 30,
+            });
+        }
+        if !status.is_success() {
+            return Err(DorkError::Backend(
+                format!("DuckDuckGo returned HTTP {status}").into(),
+            ));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| DorkError::Network(e.to_string()))?;
+
+        let mut hits = parse::parse_results(&body)?;
+        hits.truncate(query.limit);
+        for hit in &mut hits {
+            hit.source = Some(ENGINE_NAME.into());
+        }
+        Ok(hits)
+    }
+}
+
+/// Build the GET URL with the rendered query and DDG-specific knobs.
+fn build_request_url(endpoint: &str, query: &Query) -> Result<Url> {
+    let mut url = Url::parse(endpoint).map_err(|e| DorkError::Backend(e.to_string().into()))?;
+
+    let safe = match query.safe_search {
+        SafeSearch::Strict => "1",
+        SafeSearch::Moderate => "-1",
+        SafeSearch::Off => "-2",
+    };
+
+    url.query_pairs_mut()
+        .clear()
+        .append_pair("q", &query.render_with_operators())
+        .append_pair("kp", safe);
+
+    if let Some(region) = &query.region {
+        url.query_pairs_mut().append_pair("kl", region);
+    }
+
+    Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn build_url_includes_query_and_safesearch() {
+        let q = Query::new("rust async").with_safe_search(SafeSearch::Strict);
+        let url = build_request_url(DEFAULT_ENDPOINT, &q).expect("url");
+        let pairs: Vec<_> = url.query_pairs().collect();
+        assert!(pairs.iter().any(|(k, v)| k == "q" && v == "rust async"));
+        assert!(pairs.iter().any(|(k, v)| k == "kp" && v == "1"));
+    }
+
+    #[test]
+    fn build_url_renders_site_and_filetype_operators() {
+        let q = Query::new("crate")
+            .with_site("docs.rs")
+            .with_filetype("html");
+        let url = build_request_url(DEFAULT_ENDPOINT, &q).expect("url");
+        let q_pair = url
+            .query_pairs()
+            .find(|(k, _)| k == "q")
+            .map(|(_, v)| v.into_owned())
+            .expect("q present");
+        assert_eq!(q_pair, "crate site:docs.rs filetype:html");
+    }
+
+    #[test]
+    fn build_url_propagates_region() {
+        let q = Query::new("x").with_region("fr-fr");
+        let url = build_request_url(DEFAULT_ENDPOINT, &q).expect("url");
+        assert!(url.query_pairs().any(|(k, v)| k == "kl" && v == "fr-fr"));
+    }
+
+    #[test]
+    fn safesearch_off_is_minus_two() {
+        let q = Query::new("x").with_safe_search(SafeSearch::Off);
+        let url = build_request_url(DEFAULT_ENDPOINT, &q).expect("url");
+        assert!(url.query_pairs().any(|(k, v)| k == "kp" && v == "-2"));
+    }
+
+    #[test]
+    fn engine_name_is_duckduckgo() {
+        assert_eq!(DuckDuckGoEngine::new().name(), "duckduckgo");
+    }
+
+    #[tokio::test]
+    async fn search_rejects_empty_query() {
+        let engine = DuckDuckGoEngine::new();
+        let err = engine
+            .search(&Query::new(""))
+            .await
+            .expect_err("must reject");
+        assert!(matches!(err, DorkError::InvalidQuery(_)));
+    }
+
+    #[tokio::test]
+    async fn search_against_mock_server_returns_hits() {
+        let mut server = mockito::Server::new_async().await;
+        let body = include_str!("../tests/fixtures/ddg_results.html");
+        let mock = server
+            .mock("GET", mockito::Matcher::Regex("/.*".into()))
+            .with_status(200)
+            .with_header("content-type", "text/html; charset=utf-8")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let engine = DuckDuckGoEngine::builder()
+            .endpoint(format!("{}/", server.url()))
+            .build();
+
+        let hits = engine
+            .search(&Query::new("rust").with_limit(10))
+            .await
+            .expect("ok");
+        mock.assert_async().await;
+
+        assert!(!hits.is_empty(), "fixture has at least one result");
+        let first = &hits[0];
+        assert_eq!(first.rank, 1);
+        assert!(first.url.starts_with("http"));
+        assert_eq!(first.source.as_deref(), Some("duckduckgo"));
+    }
+
+    #[tokio::test]
+    async fn search_truncates_to_query_limit() {
+        let mut server = mockito::Server::new_async().await;
+        let body = include_str!("../tests/fixtures/ddg_results.html");
+        let _m = server
+            .mock("GET", mockito::Matcher::Regex("/.*".into()))
+            .with_status(200)
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let engine = DuckDuckGoEngine::builder()
+            .endpoint(format!("{}/", server.url()))
+            .build();
+
+        let hits = engine
+            .search(&Query::new("rust").with_limit(1))
+            .await
+            .expect("ok");
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_maps_429_to_rate_limited() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Regex("/.*".into()))
+            .with_status(429)
+            .with_body("rate limited")
+            .create_async()
+            .await;
+
+        let engine = DuckDuckGoEngine::builder()
+            .endpoint(format!("{}/", server.url()))
+            .build();
+
+        let err = engine
+            .search(&Query::new("x"))
+            .await
+            .expect_err("must error");
+        assert!(matches!(err, DorkError::RateLimited { .. }));
+    }
+
+    #[tokio::test]
+    async fn search_maps_5xx_to_backend() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", mockito::Matcher::Regex("/.*".into()))
+            .with_status(503)
+            .with_body("oops")
+            .create_async()
+            .await;
+
+        let engine = DuckDuckGoEngine::builder()
+            .endpoint(format!("{}/", server.url()))
+            .build();
+
+        let err = engine
+            .search(&Query::new("x"))
+            .await
+            .expect_err("must error");
+        assert!(matches!(err, DorkError::Backend(_)));
+    }
+}

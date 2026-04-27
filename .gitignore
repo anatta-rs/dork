@@ -1,0 +1,5 @@
+/target
+/coverage
+lcov.info
+*.profraw
+.DS_Store

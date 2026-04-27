@@ -1,0 +1,44 @@
+.PHONY: fmt fmt-check lint test coverage coverage-summary coverage-gate check ci clean hooks
+
+fmt:
+	cargo fmt --all
+
+fmt-check:
+	cargo fmt --all --check
+
+lint:
+	cargo clippy --all-targets --all-features -- -D warnings
+
+test:
+	cargo test --all-features --workspace
+
+coverage:
+	cargo llvm-cov --all-features --workspace --html --output-dir coverage/
+	@echo "→ coverage/html/index.html"
+
+coverage-summary:
+	cargo llvm-cov --all-features --workspace --summary-only
+
+# Fail if line coverage is below 95%.
+coverage-gate:
+	@PCT=$$(cargo llvm-cov --all-features --workspace --json --summary-only 2>/dev/null \
+		| python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["totals"]["lines"]["percent"])'); \
+	echo "Line coverage: $${PCT}%"; \
+	python3 -c "import sys; sys.exit(0 if float('$$PCT') >= 95.0 else 1)" \
+		|| { echo "FAIL: coverage $${PCT}% < 95%"; exit 1; }
+
+check: fmt-check lint test
+
+ci: check coverage-gate
+
+clean:
+	cargo clean
+	rm -rf coverage/ lcov.info *.profraw
+
+# Install local git hooks (pre-commit + pre-push). Run once after clone.
+hooks:
+	git config --local core.hooksPath .githooks
+	chmod +x .githooks/pre-commit .githooks/pre-push
+	@echo "✓ git hooks installed → .githooks/"
+	@echo "  pre-commit: fmt + clippy + test"
+	@echo "  pre-push:   make ci (+ coverage gate)"

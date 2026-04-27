@@ -1,0 +1,18 @@
+# release-plz configuration
+# Docs: https://release-plz.dev/docs/config
+
+[workspace]
+# We pin via git tag (not crates.io), so don't publish.
+publish = false
+
+# Create a GitHub release when a release PR is merged.
+git_release_enable = true
+
+# Generate / maintain CHANGELOG.md from conventional commits.
+changelog_update = true
+
+# Don't run cargo-semver-checks (needs crates.io baseline; we publish elsewhere).
+semver_check = false
+
+# All workspace crates move in lockstep — release-plz creates one Release PR.
+dependencies_update = true
