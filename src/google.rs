@@ -1,4 +1,4 @@
-//! `dork-google` — `SearchEngine` backend wrapping Google's [Custom Search
+//! `google` — `SearchEngine` backend wrapping Google's [Custom Search
 //! JSON API](https://developers.google.com/custom-search/v1/overview).
 //!
 //! Requires an API key (`key`) and a Programmable Search Engine ID (`cx`).
@@ -8,10 +8,10 @@
 //! ## Example
 //!
 //! ```no_run
-//! use dork_core::{Query, SearchEngine};
-//! use dork_google::GoogleEngine;
+//! use dork::{Query, SearchEngine};
+//! use dork::google::GoogleEngine;
 //!
-//! # async fn run() -> dork_core::Result<()> {
+//! # async fn run() -> dork::Result<()> {
 //! let engine = GoogleEngine::builder()
 //!     .api_key("AIza…")
 //!     .cx("0123…")
@@ -25,8 +25,8 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+use crate::{DorkError, Query, Result, SafeSearch, SearchEngine, SearchHit};
 use async_trait::async_trait;
-use dork_core::{DorkError, Query, Result, SafeSearch, SearchEngine, SearchHit};
 use reqwest::{Client, Url};
 use serde::Deserialize;
 
