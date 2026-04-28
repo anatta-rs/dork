@@ -1,41 +1,38 @@
-# Mark this crate as its own workspace root so it doesn't get pulled into
-# the Anatta workspace when checked out under Anatta/workspaces/ for local dev.
-[workspace]
-members = ["crates/*"]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "dork"
+description = "Unified search-engine abstraction with DuckDuckGo + Google backends"
 version = "0.1.0"
 edition = "2024"
 authors = ["Anatta <noreply@anatta.dev>"]
 license = "Apache-2.0"
 repository = "https://github.com/anatta-rs/dork"
+keywords = ["search", "search-engine", "ddg", "duckduckgo", "google"]
+categories = ["api-bindings", "asynchronous", "web-programming"]
 
-[workspace.dependencies]
-# Internal — backends depend on the core via path.
-dork-core = { path = "crates/dork-core" }
-
-# Foundational external deps.
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2"
+[dependencies]
 async-trait = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 url = "2"
+scraper = { version = "0.22", optional = true }
 
-# HTML scraping (DuckDuckGo backend).
-scraper = "0.22"
-
-# Dev-deps shared across crates.
+[dev-dependencies]
+serde_json = "1.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 pretty_assertions = "1"
 mockito = "1"
 
-[workspace.lints.rust]
+[features]
+default = ["duckduckgo"]
+duckduckgo = ["dep:scraper"]
+google = []
+
+[lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 correctness = { level = "deny", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 complexity = { level = "warn", priority = -1 }
